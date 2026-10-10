@@ -5,22 +5,32 @@ class BondYieldModel:
     def __init__(self, china_yields, us_yields):
         self.china = pd.DataFrame({'yield': china_yields})
         self.us = pd.DataFrame({'yield': us_yields})
-        self._prepare_data()
+        
+        self.thresholds = {'china': 1.2229089, 'us': 2.6969138}
+        
+        self._prepare_data(self.china, 'china')
+        self._prepare_data(self.us, 'us')
 
-    def _prepare_data(self):
-        for df in [self.china, self.us]:
-            df['change_bp'] = df['yield'].diff() * 100
-            df.dropna(inplace=True)
-            
-            sd = df['change_bp'].std()
-            threshold = 0.5 * sd
-            
-            conditions = [
-                df['change_bp'] >= threshold,
-                df['change_bp'] <= -threshold
-            ]
-            choices = ['Up', 'Down']
-            df['state'] = np.select(conditions, choices, default='Flat')
+    def _prepare_data(self, df, country):
+        df['change_bp'] = df['yield'].diff() * 100
+        df['days_diff'] = df.index.to_series().diff().dt.days
+        
+        df = df[df['days_diff'] <= 4].copy()
+        df.dropna(subset=['change_bp'], inplace=True)
+        
+        threshold = self.thresholds[country]
+        
+        conditions = [
+            df['change_bp'] >= threshold,
+            df['change_bp'] <= -threshold
+        ]
+        choices = ['Up', 'Down']
+        df['state'] = np.select(conditions, choices, default='Flat')
+        
+        if country == 'china':
+            self.china = df
+        else:
+            self.us = df
 
     def get_markov_transition_matrix(self, country='china'):
         df = self.china if country == 'china' else self.us
@@ -42,20 +52,8 @@ class BondYieldModel:
 
     def get_rolling_volatility(self, country='china', window=60):
         df = self.china if country == 'china' else self.us
-        return df['change_bp'].shift(1).rolling(window=window).std()
-
-if __name__ == "__main__":
-    np.random.seed(42)
-    dates = pd.date_range(start="2015-01-01", periods=2000, freq='B')
-    
-    mock_china = np.cumsum(np.random.normal(loc=0, scale=0.024, size=2000)) + 3.0
-    mock_us = np.cumsum(np.random.normal(loc=0, scale=0.053, size=2000)) + 2.0
-
-    model = BondYieldModel(
-        china_yields=pd.Series(mock_china, index=dates),
-        us_yields=pd.Series(mock_us, index=dates)
-    )
-
-    print(model.get_markov_transition_matrix('china').round(4))
-    print(model.get_markov_transition_matrix('us').round(4))
-    print(model.get_rolling_volatility('china', window=60).tail())
+        
+        rolling_rms = df['change_bp'].shift(1).rolling(window=window).apply(
+            lambda x: np.sqrt(np.mean(x**2)), raw=True
+        )
+        return rolling_rms
